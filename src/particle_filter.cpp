@@ -19,6 +19,32 @@
 
 using namespace std;
 
+namespace {
+    typedef Map::single_landmark_s Landmark;
+
+    int closest_landmark(const LandmarkObs& observation, const std::vector<Landmark>& landmaeks) {
+        double min_dist = numeric_limits<double>::max();
+        int    id       = -1; 
+        for (auto& lamdmark : landmaeks) {
+            // Compute the distance 
+            double dst = dist(observation.x, observation.y, lamdmark.x_f, lamdmark.y_f);
+
+            if ((dst < min_dist)) {
+                min_dist        = dst;
+                id              = lamdmark.id_i;
+            }
+        }
+        return id;
+    }
+
+    template<typename CHECK_IN_RANGE>
+    void find_landmarks_in_range(const Map& map, std::vector<Landmark>& landmarks, CHECK_IN_RANGE in_range) {
+        for (auto& landmark : map.landmark_list)
+            if (in_range(landmark))
+                landmarks.emplace_back(landmark);
+    }
+}
+
 void ParticleFilter::init(double x, double y, double theta, double std[]) {
     // TODO: Set the number of particles. Initialize all particles to first position (based on estimates of 
     //   x, y, theta and their uncertainties from GPS) and all weights to 1. 
@@ -88,22 +114,10 @@ void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::ve
     //   observed measurement to this particular landmark.
     // NOTE: this method will NOT be called by the grading code. But you will probably find it useful to 
     //   implement this method and use it as a helper during the updateWeights phase.
-    for (auto& observation : observations) {
-        double min_dist = numeric_limits<double>::max(); 
-        for (auto& particle : predicted) {
-            // Compute the distance 
-            double dst = dist(observation.x, observation.y, particle.x, particle.y);
+    
 
-            //std::cout << particle.id << " - observation : (" << observation.x << ", " << observation.y << ") / particle("
-            //          << particle.x << ", " << particle.y  << ")  : (dst : " << dst << ", min : " << min_dist << ")" << endl;
-
-            if ((dst < min_dist)) {
-                min_dist        = dst;
-                observation.id  = particle.id;
-            }
-        }
-        //std::cout << "min ID : " << observation.id  << endl;
-    }
+    // Note for the reviwer : I decided to iunclude the logic in update
+    // method instead of using this one,
 }
 
 void ParticleFilter::updateWeights(double sensor_range, double std_landmark[], 
@@ -123,44 +137,42 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
     double variance_x = pow(stdx,2);
     double variance_y = pow(stdy,2);
     double alpha      = ( 1/(2*M_PI*stdx*stdy));
-    auto& landmarks   = map_landmarks.landmark_list;
 
-    for (auto& particle : particles) {
-        std::vector<LandmarkObs> predicted;
-        std::vector<LandmarkObs> transformed_obs;
-       
-        // Ignore landmark outside sensor range
-        for (auto& landmark : map_landmarks.landmark_list)
-            if (fabs(landmark.x_f - particle.x) <= sensor_range && abs(landmark.y_f - particle.y) <= sensor_range)
-                predicted.emplace_back(LandmarkObs{landmark.id_i, landmark.x_f, landmark.y_f});
-
-        // transform observations coordinates
-        transform(begin(observations),end(observations), back_inserter(transformed_obs), [=](const LandmarkObs& observation) -> LandmarkObs{
-            double x = observation.x * cos(particle.theta) - observation.y * sin(particle.theta) + particle.x;
-            double y = observation.x * sin(particle.theta) + observation.y * cos(particle.theta) + particle.y;
-
-            return LandmarkObs{observation.id, x, y};
+    for(auto& particle :  particles) {
+        //  Find landmarks in semsor range
+        std::vector<Landmark> landmarksInRange;
+        find_landmarks_in_range(map_landmarks, landmarksInRange,  [=](const Landmark& landmark){
+            return fabs(landmark.x_f - particle.x) <= sensor_range && abs(landmark.y_f - particle.y) <= sensor_range;
         });
 
-        // Associate observations
-        dataAssociation(predicted, transformed_obs);
+        // Make sure we have landmaeks in range
+        if (landmarksInRange.size() == 0)
+            continue;
 
-        // re-compute weight.
-        particle.weight = accumulate(begin(transformed_obs), 
-                                     end(transformed_obs), 
-                                     1.0, [=](double total, const LandmarkObs& observation){
-            auto& landmark   = landmarks[observation.id-1];
+        particle.weight = 1.0;
+
+        for (auto& observation : observations) {
+            // Convert to map coordinates
+            LandmarkObs transformedObs;
+
+            transformedObs.x = observation.x * cos(particle.theta) - observation.y * sin(particle.theta) + particle.x;
+            transformedObs.y = observation.x * sin(particle.theta) + observation.y * cos(particle.theta) + particle.y; 
+
+
+            // Find closest landmark.
+            auto id = ::closest_landmark(transformedObs, landmarksInRange);
+
+            //  Update weight.
+            auto&  landmark  = map_landmarks.landmark_list[id-1];
             double mux       = landmark.x_f;
             double muy       = landmark.y_f;
-            double x         = observation.x;
-            double y         = observation.y;
+            double x         = transformedObs.x;
+            double y         = transformedObs.y;
             double weight    = (alpha * exp( -( pow(x - mux,2)/(2*variance_x)  + (pow(y - muy,2)/(2*variance_y)) ) ));
 
-            //std::cout << " Obs ID : " << observation.id  << ", Weight : "  << weight << endl;
-
-            
-            return  total * weight;
-        });
+            particle.weight *= weight;
+        }
+        // Stpre patrical new weight.
         weights[particle.id] = particle.weight;
     }
 }
